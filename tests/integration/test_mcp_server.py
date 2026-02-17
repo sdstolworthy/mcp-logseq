@@ -41,7 +41,7 @@ class TestMCPServerIntegration:
     def test_list_tools_handler_count(self):
         """Test that we have the expected number of tool handlers."""
         # We should have 6 registered tool handlers
-        assert len(tool_handlers) == 6
+        assert len(tool_handlers) == 8
 
         # Verify core tool names are present
         core_tools = [

@@ -84,7 +84,8 @@ add_tool_handler(tools.ListPagesToolHandler())
 add_tool_handler(tools.GetPageContentToolHandler())
 add_tool_handler(tools.DeletePageToolHandler())
 add_tool_handler(tools.SearchToolHandler())
-
+add_tool_handler(tools.GetGraphInfoToolHandler())
+add_tool_handler(tools.ReadPageFileToolHandler())
 logger.info("Tool handlers registration complete")
 
 

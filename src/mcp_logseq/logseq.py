@@ -626,3 +626,111 @@ class LogSeq:
         except Exception as e:
             logger.error(f"Failed to set property '{key}' on block {block_uuid}: {e}")
             raise
+
+    def get_graph_info(self) -> Any:
+        """Get information about the current LogSeq graph including its filesystem path."""
+        url = self.get_base_url()
+        logger.info("Getting current graph info")
+
+        try:
+            # Get current graph (returns name, path, url)
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.App.getCurrentGraph",
+                    "args": []
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            graph_info = response.json()
+
+            # Get user configs for additional context
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.App.getUserConfigs",
+                    "args": []
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            user_configs = response.json()
+
+            return {
+                "graph": graph_info,
+                "configs": user_configs
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting graph info: {str(e)}")
+            raise
+
+    def read_page_file(self, page_name: str) -> Any:
+        """Read a page's markdown file directly from the LogSeq graph directory."""
+        import os
+        logger.info(f"Reading page file for '{page_name}'")
+
+        try:
+            graph_info = self.get_graph_info()
+            graph_path = graph_info.get("graph", {}).get("path")
+
+            if not graph_path:
+                raise ValueError("Could not determine graph path")
+
+            # Check pages/ directory first, then journals/
+            pages_dir = os.path.join(graph_path, "pages")
+            journals_dir = os.path.join(graph_path, "journals")
+
+            # Try exact filename in pages/
+            page_file = os.path.join(pages_dir, f"{page_name}.md")
+            if os.path.isfile(page_file):
+                with open(page_file, "r", encoding="utf-8") as f:
+                    return {"path": page_file, "content": f.read(), "source": "pages"}
+
+            # Try case-insensitive match in pages/
+            if os.path.isdir(pages_dir):
+                for fname in os.listdir(pages_dir):
+                    if fname.lower() == f"{page_name.lower()}.md":
+                        fpath = os.path.join(pages_dir, fname)
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            return {"path": fpath, "content": f.read(), "source": "pages"}
+
+            # Try journals/ directory (filenames are YYYY_MM_DD.md)
+            if os.path.isdir(journals_dir):
+                for fname in os.listdir(journals_dir):
+                    fpath = os.path.join(journals_dir, fname)
+                    if os.path.isfile(fpath):
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            first_line = f.readline()
+                            f.seek(0)
+                            # Check if the page name appears to match this journal
+                            if page_name.lower().replace(" ", "_") in fname.lower().replace(" ", "_"):
+                                return {"path": fpath, "content": f.read(), "source": "journals"}
+
+            # If still not found, try to get page info from API to find the file
+            page_info = self.get_page_content(page_name)
+            if page_info and page_info.get("page", {}).get("file"):
+                # The API gives us a file ID but not the path directly
+                # Fall back to searching all md files
+                for root_dir in [pages_dir, journals_dir]:
+                    if os.path.isdir(root_dir):
+                        for fname in os.listdir(root_dir):
+                            if fname.endswith(".md"):
+                                fpath = os.path.join(root_dir, fname)
+                                with open(fpath, "r", encoding="utf-8") as f:
+                                    content = f.read()
+                                    if page_name.lower() in content.lower():
+                                        return {"path": fpath, "content": content, "source": os.path.basename(root_dir)}
+
+            raise FileNotFoundError(f"Could not find file for page '{page_name}' in graph at '{graph_path}'")
+
+        except (FileNotFoundError, ValueError):
+            raise
+        except Exception as e:
+            logger.error(f"Error reading page file: {str(e)}")
+            raise

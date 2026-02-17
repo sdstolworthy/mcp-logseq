@@ -299,6 +299,7 @@ class GetPageContentToolHandler(ToolHandler):
             # Note: Page properties are already in the first block's content,
             # so we don't need to show them separately in YAML frontmatter
             blocks = result.get("blocks", [])
+<<<<<<< HEAD
 
             # Blocks content - use recursive formatter
             max_depth = args.get("max_depth", -1)
@@ -631,4 +632,92 @@ class SearchToolHandler(ToolHandler):
 
         except Exception as e:
             logger.error(f"Failed to search: {str(e)}")
-            return [TextContent(type="text", text=f"❌ Search failed: {str(e)}")]
+            return [TextContent(
+                type="text",
+                text=f"❌ Search failed: {str(e)}"
+            )]
+
+class GetGraphInfoToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__("get_graph_info")
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description="Get information about the current LogSeq graph, including its name, filesystem path, and user configuration.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        )
+
+    def run_tool(self, args: dict) -> list[TextContent]:
+        try:
+            api = logseq.LogSeq(api_key=api_key)
+            result = api.get_graph_info()
+
+            graph = result.get("graph", {})
+            configs = result.get("configs", {})
+
+            parts = []
+            parts.append(f"# Graph: {graph.get('name', 'Unknown')}")
+            parts.append(f"Path: {graph.get('path', 'Unknown')}")
+            parts.append(f"Format: {configs.get('preferredFormat', 'Unknown')}")
+            parts.append(f"Date format: {configs.get('preferredDateFormat', 'Unknown')}")
+            parts.append(f"Journals enabled: {configs.get('enabledJournals', 'Unknown')}")
+
+            repos = configs.get("me", {}).get("repos", [])
+            if repos:
+                parts.append("\nAvailable graphs:")
+                for repo in repos:
+                    parts.append(f"  - {repo.get('url', 'Unknown')}")
+
+            return [TextContent(type="text", text="\n".join(parts))]
+
+        except Exception as e:
+            logger.error(f"Failed to get graph info: {str(e)}")
+            raise
+
+class ReadPageFileToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__("read_page_file")
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description="Read a page's raw markdown file directly from the LogSeq graph directory on disk. Useful as a fallback when the API doesn't return complete content.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "page_name": {
+                        "type": "string",
+                        "description": "Name of the page to read from disk"
+                    }
+                },
+                "required": ["page_name"]
+            }
+        )
+
+    def run_tool(self, args: dict) -> list[TextContent]:
+        if "page_name" not in args:
+            raise RuntimeError("page_name argument required")
+
+        try:
+            api = logseq.LogSeq(api_key=api_key)
+            result = api.read_page_file(args["page_name"])
+
+            parts = []
+            parts.append(f"# {args['page_name']}")
+            parts.append(f"Source: {result.get('source', 'unknown')}/{os.path.basename(result.get('path', ''))}")
+            parts.append(f"Path: {result.get('path', 'Unknown')}")
+            parts.append("")
+            parts.append(result.get("content", ""))
+
+            return [TextContent(type="text", text="\n".join(parts))]
+
+        except FileNotFoundError as e:
+            return [TextContent(type="text", text=f"❌ {str(e)}")]
+        except Exception as e:
+            logger.error(f"Failed to read page file: {str(e)}")
+            raise
