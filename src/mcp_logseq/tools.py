@@ -299,7 +299,6 @@ class GetPageContentToolHandler(ToolHandler):
             # Note: Page properties are already in the first block's content,
             # so we don't need to show them separately in YAML frontmatter
             blocks = result.get("blocks", [])
-<<<<<<< HEAD
 
             # Blocks content - use recursive formatter
             max_depth = args.get("max_depth", -1)
