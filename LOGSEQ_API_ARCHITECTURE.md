@@ -55,6 +55,13 @@ Standard JSON-RPC response with result or error.
   - Adds content block to existing page
   - Example: `["My Page", "This is content"]`
 
+- **`insertBlock(targetBlockUUID, content, options)`**
+  - Inserts a new block relative to an existing block
+  - Options: `{sibling: false, properties: {...}}`
+  - `sibling: false` inserts as child (default)
+  - `sibling: true` inserts as sibling after target
+  - Example: `["parent-block-uuid-123", "Child content", {"sibling": false, "properties": {}}]`
+
 - **`getAllPages()`**
   - Returns array of all page objects with metadata
   - Each page includes: name, properties, journal status, etc.
@@ -70,7 +77,6 @@ Standard JSON-RPC response with result or error.
 #### 🔍 Likely Available (Unverified)
 - **`deletePage(pageName)`** - Delete page entirely
 - **`updatePage(pageName, properties)`** - Update page properties
-- **`insertBlock(targetBlock, content, options)`** - Insert block at position
 - **`updateBlock(blockUUID, content)`** - Update specific block content
 - **`removeBlock(blockUUID)`** - Delete specific block
 
@@ -156,16 +162,41 @@ To create page with content:
 1. `createPage(pageName, {}, {"createFirstBlock": true})`
 2. `appendBlockInPage(pageName, content)` (if content needed)
 
-## Future Research Areas
+### Nested Block Creation Pattern
+To create hierarchical block structures:
+1. Create parent block: `appendBlockInPage(pageName, "Parent content")`
+2. Get parent block UUID from the returned block data
+3. Insert child: `insertBlock(parentBlockUUID, "Child content", {"sibling": false})`
+4. Insert another child: `insertBlock(parentBlockUUID, "Second child", {"sibling": false})`
+5. Insert sibling: `insertBlock(parentBlockUUID, "Sibling content", {"sibling": true})`
 
-- Block-level CRUD operations
-- Graph management operations  
-- Advanced property management
-- Asset/file operations via `logseq.Assets.*`
-- UI interaction via `logseq.UI.*`
-- Git operations via `logseq.Git.*`
+Block hierarchy example:
+```
+- Parent block
+  - Child block 1
+  - Child block 2
+- Sibling block
+```
+
+## Current Status (as of v1.4.0)
+
+15 tools implemented. Block CRUD is complete:
+
+| Operation | Tool | Status |
+| --------- | ---- | ------ |
+| Read | `get_page_content` | ✅ |
+| Create | `insert_nested_block` | ✅ |
+| Delete | `delete_block` | ✅ |
+| Update | `update_block` | ✅ |
+
+## Future Research Areas
+- **Graph context** (`logseq.App.getCurrentGraph`) — Expose which graph is active. Low effort, useful for multi-graph setups.
+- **Advanced property management** — Set block-level properties directly (`logseq.Editor.setBlockProperties`). Currently only page properties are writable.
+- ~~Asset/file operations via `logseq.Assets.*`~~ — Not useful for AI assistant context.
+- ~~UI interaction via `logseq.UI.*`~~ — UI automation from AI is fragile; not worth pursuing.
+- ~~Git operations via `logseq.Git.*`~~ — Too niche (requires Logseq's built-in git sync).
 
 ---
 
-*Last Updated: 2025-01-20*
+*Last Updated: 2026-02-24*
 *Based on LogSeq source analysis and MCP server implementation*

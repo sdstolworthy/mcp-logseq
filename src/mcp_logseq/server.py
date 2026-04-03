@@ -83,9 +83,44 @@ add_tool_handler(tools.UpdatePageToolHandler())
 add_tool_handler(tools.ListPagesToolHandler())
 add_tool_handler(tools.GetPageContentToolHandler())
 add_tool_handler(tools.DeletePageToolHandler())
+add_tool_handler(tools.DeleteBlockToolHandler())
+add_tool_handler(tools.UpdateBlockToolHandler())
+add_tool_handler(tools.GetBlockToolHandler())
 add_tool_handler(tools.SearchToolHandler())
-
+add_tool_handler(tools.QueryToolHandler())
+add_tool_handler(tools.FindPagesByPropertyToolHandler())
+add_tool_handler(tools.GetPagesFromNamespaceToolHandler())
+add_tool_handler(tools.GetPagesTreeFromNamespaceToolHandler())
+add_tool_handler(tools.RenamePageToolHandler())
+add_tool_handler(tools.GetPageBacklinksToolHandler())
+add_tool_handler(tools.InsertNestedBlockToolHandler())
+add_tool_handler(tools.SetBlockPropertiesToolHandler())
 logger.info("Tool handlers registration complete")
+
+# Conditional vector tool registration — only when LOGSEQ_CONFIG_FILE is set
+# and vector.enabled is true in the config file
+try:
+    from .config import load_vector_config, load_exclude_tags
+    vector_config = load_vector_config()
+    # Merge top-level exclude_tags into vector config (additive union)
+    top_level_exclude = load_exclude_tags()
+    if vector_config and top_level_exclude:
+        merged = list(dict.fromkeys(top_level_exclude + vector_config.exclude_tags))
+        vector_config.exclude_tags = merged
+    if vector_config and vector_config.enabled:
+        from .vector.index import (
+            VectorDBStatusToolHandler,
+            VectorSearchToolHandler,
+            SyncVectorDBToolHandler,
+        )
+        add_tool_handler(VectorSearchToolHandler(vector_config))
+        add_tool_handler(SyncVectorDBToolHandler(vector_config))
+        add_tool_handler(VectorDBStatusToolHandler(vector_config))
+        logger.info("Vector search tools registered (3 tools)")
+    else:
+        logger.debug("Vector search not configured — skipping vector tools")
+except Exception as e:
+    logger.warning(f"Could not load vector config, vector tools disabled: {e}")
 
 
 @app.list_tools()

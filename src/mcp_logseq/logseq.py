@@ -146,7 +146,7 @@ class LogSeq:
             response = requests.post(
                 url,
                 headers=self._get_headers(),
-                json={"method": "logseq.search", "args": [query, search_options]},
+                json={"method": "logseq.App.search", "args": [query, search_options]},
                 verify=self.verify_ssl,
                 timeout=self.timeout,
             )
@@ -232,22 +232,7 @@ class LogSeq:
         Args:
             block_uuid: UUID of block to remove
         """
-        url = self.get_base_url()
-        logger.debug(f"Removing block '{block_uuid}'")
-
-        try:
-            response = requests.post(
-                url,
-                headers=self._get_headers(),
-                json={"method": "logseq.Editor.removeBlock", "args": [block_uuid]},
-                verify=self.verify_ssl,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-
-        except Exception as e:
-            logger.error(f"Error removing block '{block_uuid}': {str(e)}")
-            raise
+        self.delete_block(block_uuid)
 
     def clear_page_content(self, page_name: str) -> None:
         """
@@ -364,13 +349,23 @@ class LogSeq:
         logger.info(f"Creating page '{title}' with {len(blocks)} blocks")
 
         try:
-            # Step 1: Create the page without properties (properties will be set on first block later)
+            # Normalize properties for the createPage API.
+            # Passing them as the 2nd argument stores them at the page entity level,
+            # which is what Logseq queries via (page-property ...) and displays in
+            # the page info panel. Using upsertBlockProperty on a content block
+            # would create block-level properties instead, breaking queries.
+            api_props: dict = {}
+            if properties:
+                for key, value in properties.items():
+                    api_props[key] = self._normalize_property_value(key, value)
+
+            # Step 1: Create the page with page-level properties
             response = requests.post(
                 url,
                 headers=self._get_headers(),
                 json={
                     "method": "logseq.Editor.createPage",
-                    "args": [title, {}, {"createFirstBlock": True}],
+                    "args": [title, api_props, {"createFirstBlock": True}],
                 },
                 verify=self.verify_ssl,
                 timeout=self.timeout,
@@ -389,18 +384,17 @@ class LogSeq:
                         # Insert all blocks as siblings after the first block
                         self.insert_batch_block(first_block_uuid, blocks, sibling=True)
 
-                        # Remove the empty first block that was auto-created
-                        self.remove_block(first_block_uuid)
+                        logger.info(f"api_props={api_props!r}, will delete first block: {not api_props}")
+                        if not api_props:
+                            # No properties — remove the empty placeholder block
+                            self.remove_block(first_block_uuid)
+                        # When properties exist, keep the first block: createPage
+                        # stores them there as a preBlock (tags:: val lines)
                 else:
                     # Fallback: append blocks one by one if no first block
                     logger.warning("No first block found, using fallback append method")
                     for block in blocks:
                         self._append_block_recursive(title, block)
-
-            # Step 3: Set properties on the first block if provided
-            # Properties must be set AFTER blocks are inserted to ensure they're on the correct block
-            if properties:
-                self._update_page_properties(title, properties)
 
             logger.info(f"Successfully created page '{title}' with blocks")
             return page_result
@@ -421,14 +415,15 @@ class LogSeq:
         properties = block.get("properties")
         children = block.get("children", [])
 
-        # Append this block
-        result = self.append_block_in_page(page_name, content, properties)
+        # Append this block, nested under parent if available
+        if parent_uuid:
+            result = self.insert_block_as_child(parent_uuid, content, properties)
+        else:
+            result = self.append_block_in_page(page_name, content, properties)
         block_uuid = result.get("uuid") if result else None
 
-        # Append children if any (would need insertBlock with parent)
-        # For now, just append them at root level with indentation marker
+        # Recursively append children under this block
         for child in children:
-            # Note: This is a simplified fallback - proper nesting requires insertBlock
             self._append_block_recursive(page_name, child, block_uuid)
 
     def update_page_with_blocks(
@@ -516,18 +511,15 @@ class LogSeq:
                         results.append(("blocks_appended", len(blocks)))
 
             # Update properties AFTER blocks are inserted/replaced
-            # This ensures properties are always set on the correct first block
             if properties:
-                # For append mode, merge with existing properties
-                # For replace mode, replace all properties
                 if mode == "append":
-                    existing_props = self._get_page_properties(page_name)
+                    existing_props = self._get_page_level_properties(page_name)
                     merged_props = {**existing_props, **properties}
-                    self._update_page_properties(page_name, merged_props)
+                    self._set_page_level_properties(page_name, merged_props)
                     results.append(("properties", merged_props))
                 else:
                     # Replace mode - set only the new properties
-                    self._update_page_properties(page_name, properties)
+                    self._set_page_level_properties(page_name, properties)
                     results.append(("properties", properties))
 
             return {"updates": results, "page": page_name}
@@ -573,6 +565,59 @@ class LogSeq:
             return [k for k, v in value.items() if v]
 
         return value
+
+    def _get_page_level_properties(self, page_name: str) -> dict:
+        """
+        Get page-level properties from the page entity (not from the first block).
+
+        Uses getPage which returns the page entity with its page-level properties.
+        """
+        url = self.get_base_url()
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={"method": "logseq.Editor.getPage", "args": [page_name]},
+                verify=self.verify_ssl,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            page = response.json()
+            if page and isinstance(page, dict):
+                return page.get("properties", {}) or {}
+            return {}
+        except Exception as e:
+            logger.warning(f"Could not get page-level properties for '{page_name}': {e}")
+            return {}
+
+    def _set_page_level_properties(self, page_name: str, properties: dict) -> None:
+        """
+        Set page-level properties via the setPageProperties API.
+
+        Unlike upsertBlockProperty (which sets block-level properties), this
+        stores properties at the page entity level, making them visible in the
+        page info panel and queryable via (page-property ...).
+        """
+        url = self.get_base_url()
+        api_props = {
+            k: self._normalize_property_value(k, v) for k, v in properties.items()
+        }
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.setPageProperties",
+                    "args": [page_name, api_props],
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            logger.info(f"Set {len(properties)} page-level properties on '{page_name}'")
+        except Exception as e:
+            logger.error(f"Could not set page-level properties for '{page_name}': {e}")
+            raise
 
     def _update_page_properties(self, page_name: str, properties: dict) -> None:
         """
@@ -625,4 +670,571 @@ class LogSeq:
             response.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to set property '{key}' on block {block_uuid}: {e}")
+            raise
+
+    # =========================================================================
+    # DB-mode Property Methods (Datascript)
+    # =========================================================================
+
+    def datascript_query(self, query: str) -> list[list]:
+        """Execute a raw Datascript query against the Logseq database.
+
+        Args:
+            query: Datalog query string (e.g. '[:find ?a ?v :where [101 ?a ?v]]')
+
+        Returns:
+            List of result tuples, e.g. [["title", "My Page"], [":db/ident", ":logseq..."]]
+            Each inner list corresponds to the :find clause bindings.
+        """
+        url = self.get_base_url()
+        logger.debug(f"Executing datascript query")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.DB.datascriptQuery",
+                    "args": [query],
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error executing datascript query: {str(e)}")
+            raise
+
+    def get_block_db_properties(self, block_id: int) -> dict[str, str]:
+        """Get DB-mode class properties for a block.
+
+        In Logseq DB-mode, class properties are stored as :user.property/*
+        attributes on the block entity, with values referencing other entities.
+
+        Args:
+            block_id: The numeric ID of the block
+
+        Returns:
+            Dict of {property_title: value_title}
+        """
+        # Get all attributes and their values for this block
+        query = f'[:find ?a ?v :where [{block_id} ?a ?v]]'
+        try:
+            attrs = self.datascript_query(query)
+        except Exception:
+            return {}
+
+        user_props = {}
+        for attr, val in attrs:
+            if isinstance(attr, str) and attr.startswith(":user.property/"):
+                user_props[attr] = val
+
+        if not user_props:
+            return {}
+
+        # Resolve property display names and value titles
+        result = {}
+        for ident, val_id in user_props.items():
+            # Get property display name via :db/ident lookup
+            prop_name = self._resolve_entity_title_by_ident(ident) or ident
+
+            # Get value title (val_id is an entity reference in DB-mode)
+            if isinstance(val_id, int):
+                val_title = self._resolve_entity_title(val_id) or str(val_id)
+            else:
+                val_title = str(val_id)
+
+            result[prop_name] = val_title
+
+        return result
+
+    def _resolve_entity_title_by_ident(self, ident: str) -> str | None:
+        """Resolve a :db/ident to its entity's title."""
+        query = f'[:find ?id :where [?id :db/ident {ident}]]'
+        try:
+            result = self.datascript_query(query)
+            if result:
+                return self._resolve_entity_title(result[0][0])
+        except Exception:
+            pass
+        return None
+
+    def _resolve_entity_title(self, entity_id: int) -> str | None:
+        """Get the title of an entity by its numeric ID."""
+        query = f'[:find ?a ?v :where [{entity_id} ?a ?v]]'
+        try:
+            attrs = self.datascript_query(query)
+            for attr, val in attrs:
+                if attr == "title":
+                    return str(val)
+        except Exception:
+            pass
+        return None
+
+    def _resolve_idents_batch(self, idents: set[str]) -> dict[str, int]:
+        """Resolve multiple :db/ident values to their entity IDs in one query.
+
+        Args:
+            idents: Set of ident strings (e.g. {":user.property/status-abc"})
+
+        Returns:
+            Dict of {ident: entity_id}
+        """
+        if not idents:
+            return {}
+        or_clauses = " ".join(f'[?id :db/ident {ident}]' for ident in idents)
+        query = f'[:find ?id ?ident :where (or {or_clauses}) [?id :db/ident ?ident]]'
+        try:
+            result = self.datascript_query(query)
+            return {ident: eid for eid, ident in result if isinstance(ident, str)}
+        except Exception:
+            logger.warning("Batch ident resolution failed, falling back to individual queries")
+            # Fallback: resolve one by one
+            mapping = {}
+            for ident in idents:
+                try:
+                    r = self.datascript_query(f'[:find ?id :where [?id :db/ident {ident}]]')
+                    if r:
+                        mapping[ident] = r[0][0]
+                except Exception:
+                    pass
+            return mapping
+
+    def _resolve_titles_batch(self, entity_ids: set[int]) -> dict[int, str]:
+        """Resolve titles for multiple entities in a single query.
+
+        Args:
+            entity_ids: Set of numeric entity IDs
+
+        Returns:
+            Dict of {entity_id: title}
+        """
+        if not entity_ids:
+            return {}
+        or_clauses = " ".join(f'[{eid} ?a ?v]' for eid in entity_ids)
+        query = f'[:find ?eid ?a ?v :where (or {or_clauses})]'
+        try:
+            results = self.datascript_query(query)
+            titles = {}
+            for eid, attr, val in results:
+                if attr == "title":
+                    titles[eid] = str(val)
+            return titles
+        except Exception:
+            logger.warning("Batch title resolution failed, falling back to individual queries")
+            # Fallback: resolve one by one
+            titles = {}
+            for eid in entity_ids:
+                title = self._resolve_entity_title(eid)
+                if title:
+                    titles[eid] = title
+            return titles
+
+    def get_blocks_db_properties(self, blocks: list[dict]) -> dict[str, dict[str, str]]:
+        """Get DB-mode properties for a list of blocks (from getPageBlocksTree).
+
+        Batched approach to minimize API round-trips:
+        1. Per block: query attributes (1 call per block)
+        2. Batch resolve all :user.property/* idents to entity IDs (1 call)
+        3. Batch resolve all entity titles (property names + values) (1 call)
+
+        Args:
+            blocks: List of block dicts from getPageBlocksTree
+
+        Returns:
+            Dict of {block_uuid: {property_title: value_title}}
+        """
+        # Phase 1: collect all block attributes (1 query per block)
+        block_props: dict[str, dict[str, Any]] = {}  # uuid -> {ident: val}
+
+        def collect_attrs(block_list: list[dict]) -> None:
+            for block in block_list:
+                block_id = block.get("id")
+                block_uuid = str(block.get("uuid", ""))
+                if block_id and block_uuid:
+                    query = f'[:find ?a ?v :where [{block_id} ?a ?v]]'
+                    try:
+                        attrs = self.datascript_query(query)
+                    except Exception:
+                        attrs = []
+                    user_props = {}
+                    for attr, val in attrs:
+                        if isinstance(attr, str) and attr.startswith(":user.property/"):
+                            user_props[attr] = val
+                    if user_props:
+                        block_props[block_uuid] = user_props
+                collect_attrs(block.get("children", []))
+
+        collect_attrs(blocks)
+
+        if not block_props:
+            return {}
+
+        # Phase 2: batch resolve all unique idents to entity IDs (1 query)
+        all_idents = set()
+        for props in block_props.values():
+            all_idents.update(props.keys())
+
+        ident_to_eid = self._resolve_idents_batch(all_idents)
+
+        # Phase 3: collect all entity IDs needing title resolution
+        entity_ids_to_resolve = set(ident_to_eid.values())
+        for props in block_props.values():
+            for val in props.values():
+                if isinstance(val, int):
+                    entity_ids_to_resolve.add(val)
+
+        # Batch resolve all titles (1 query)
+        titles = self._resolve_titles_batch(entity_ids_to_resolve)
+
+        # Phase 4: assemble results using the resolved titles
+        result = {}
+        for block_uuid, props in block_props.items():
+            resolved = {}
+            for ident, val in props.items():
+                # Property name: ident -> entity ID -> title
+                prop_eid = ident_to_eid.get(ident)
+                prop_name = titles.get(prop_eid) if prop_eid else None
+                prop_name = prop_name or ident
+
+                # Value: entity ref -> title, or string as-is
+                if isinstance(val, int):
+                    val_title = titles.get(val) or str(val)
+                else:
+                    val_title = str(val)
+
+                resolved[prop_name] = val_title
+            if resolved:
+                result[block_uuid] = resolved
+
+        return result
+
+    def resolve_property_ident(self, property_name: str) -> str | None:
+        """Look up the :user.property/* ident for a property by its display name.
+
+        Uses a two-step approach since DB-mode datascript queries cannot filter
+        on string attributes directly.
+
+        Args:
+            property_name: The human-readable property name (e.g. "Content status")
+
+        Returns:
+            The ident string (e.g. ":user.property/Contentstatus-oa99RD2-") or None
+        """
+        # Get all user property entities
+        query = '[:find ?id ?ident :where [?id :db/ident ?ident]]'
+        try:
+            result = self.datascript_query(query)
+            # Filter for :user.property/* idents
+            for entity_id, ident in result:
+                if isinstance(ident, str) and ident.startswith(":user.property/"):
+                    title = self._resolve_entity_title(entity_id)
+                    if title and title.lower() == property_name.lower():
+                        return ident
+        except Exception:
+            pass
+        return None
+
+    def get_block(self, block_uuid: str, include_children: bool = True) -> Any:
+        """Get a LogSeq block by UUID, optionally including its children tree.
+
+        Args:
+            block_uuid: UUID of the block to retrieve.
+            include_children: Whether to include nested children (default True).
+
+        Returns:
+            Block dict with content, properties, uuid, children, etc.
+        """
+        url = self.get_base_url()
+        logger.info(f"Getting block '{block_uuid}' (children={include_children})")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.getBlock",
+                    "args": [block_uuid, {"includeChildren": include_children}],
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if result is None:
+                raise ValueError(f"Block '{block_uuid}' not found")
+
+            logger.info(f"Successfully retrieved block '{block_uuid}'")
+            return result
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting block '{block_uuid}': {str(e)}")
+            raise
+
+    def resolve_page_uuids(self, uuids: list[str]) -> dict[str, str]:
+        """Resolve a list of page UUIDs to their human-readable names.
+
+        Batch-resolves by calling logseq.Editor.getPage once per unique UUID.
+        Results are returned as a dict mapping UUID -> page name.
+        UUIDs that cannot be resolved are silently omitted.
+
+        Args:
+            uuids: List of page UUID strings to resolve.
+
+        Returns:
+            Dict mapping UUID string to page name string.
+        """
+        url = self.get_base_url()
+        resolved = {}
+
+        for uuid in set(uuids):
+            try:
+                response = requests.post(
+                    url,
+                    headers=self._get_headers(),
+                    json={"method": "logseq.Editor.getPage", "args": [uuid]},
+                    verify=self.verify_ssl,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                page = response.json()
+
+                if page and isinstance(page, dict):
+                    name = page.get("originalName") or page.get("name")
+                    if name:
+                        resolved[uuid] = name
+            except Exception as e:
+                logger.warning(f"Could not resolve page UUID '{uuid}': {e}")
+
+        logger.info(f"Resolved {len(resolved)}/{len(set(uuids))} page UUIDs")
+        return resolved
+
+    def delete_block(self, block_uuid: str) -> Any:
+        """Delete a LogSeq block by UUID."""
+        url = self.get_base_url()
+        logger.info(f"Deleting block '{block_uuid}'")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.removeBlock",
+                    "args": [block_uuid]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"Successfully deleted block '{block_uuid}'")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error deleting block '{block_uuid}': {str(e)}")
+            raise
+
+    def update_block(self, block_uuid: str, content: str) -> Any:
+        """Update a LogSeq block's content by UUID."""
+        url = self.get_base_url()
+        logger.info(f"Updating block '{block_uuid}'")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.updateBlock",
+                    "args": [block_uuid, content]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"Successfully updated block '{block_uuid}'")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error updating block '{block_uuid}': {str(e)}")
+            raise
+
+    def query_dsl(self, query: str) -> Any:
+        """Execute a Logseq DSL query to search pages and blocks.
+
+        Args:
+            query: Logseq DSL query string (e.g., '(page-property status active)')
+
+        Returns:
+            List of matching pages/blocks from the query
+        """
+        url = self.get_base_url()
+        logger.info(f"Executing DSL query: {query}")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.DB.q",
+                    "args": [query]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Error executing DSL query: {str(e)}")
+            raise
+
+    def get_pages_from_namespace(self, namespace: str) -> Any:
+        """Get all pages within a namespace (flat list)."""
+        url = self.get_base_url()
+        logger.info(f"Getting pages from namespace '{namespace}'")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.getPagesFromNamespace",
+                    "args": [namespace]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Error getting pages from namespace: {str(e)}")
+            raise
+
+    def get_pages_tree_from_namespace(self, namespace: str) -> Any:
+        """Get pages within a namespace as a tree structure."""
+        url = self.get_base_url()
+        logger.info(f"Getting pages tree from namespace '{namespace}'")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.getPagesTreeFromNamespace",
+                    "args": [namespace]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Error getting pages tree from namespace: {str(e)}")
+            raise
+
+    def rename_page(self, old_name: str, new_name: str) -> Any:
+        """Rename a page and update all references."""
+        url = self.get_base_url()
+        logger.info(f"Renaming page '{old_name}' to '{new_name}'")
+
+        try:
+            # Validate old page exists
+            existing_pages = self.list_pages()
+            page_names = [p.get("originalName") or p.get("name") for p in existing_pages]
+
+            if old_name not in page_names:
+                raise ValueError(f"Page '{old_name}' does not exist")
+
+            if new_name in page_names:
+                raise ValueError(f"Page '{new_name}' already exists")
+
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.renamePage",
+                    "args": [old_name, new_name]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            # renamePage returns null on success
+            if response.text and response.text.strip() and response.text.strip() != 'null':
+                return response.json()
+            return None
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Error renaming page: {str(e)}")
+            raise
+
+    def get_page_linked_references(self, page_name: str) -> Any:
+        """Get all pages and blocks that reference this page (backlinks)."""
+        url = self.get_base_url()
+        logger.info(f"Getting backlinks for page '{page_name}'")
+
+        try:
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.getPageLinkedReferences",
+                    "args": [page_name]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"Error getting backlinks: {str(e)}")
+            raise
+
+    def insert_block_as_child(
+        self,
+        parent_block_uuid: str,
+        content: str,
+        properties: dict = None,
+        sibling: bool = False
+    ) -> Any:
+        """Insert a new block as a child of an existing block, enabling nested block structures."""
+        url = self.get_base_url()
+        logger.info(f"Inserting block as {'sibling' if sibling else 'child'} of {parent_block_uuid}")
+
+        try:
+            options = {
+                "sibling": sibling
+            }
+
+            if properties:
+                options["properties"] = properties
+
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json={
+                    "method": "logseq.Editor.insertBlock",
+                    "args": [parent_block_uuid, content, options]
+                },
+                verify=self.verify_ssl,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            logger.info(f"Successfully inserted block under {parent_block_uuid}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error inserting nested block: {str(e)}")
             raise

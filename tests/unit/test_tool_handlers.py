@@ -6,8 +6,18 @@ from mcp_logseq.tools import (
     ListPagesToolHandler,
     GetPageContentToolHandler,
     DeletePageToolHandler,
+    DeleteBlockToolHandler,
+    UpdateBlockToolHandler,
+    GetBlockToolHandler,
     UpdatePageToolHandler,
     SearchToolHandler,
+    QueryToolHandler,
+    FindPagesByPropertyToolHandler,
+    GetPagesFromNamespaceToolHandler,
+    GetPagesTreeFromNamespaceToolHandler,
+    RenamePageToolHandler,
+    GetPageBacklinksToolHandler,
+    InsertNestedBlockToolHandler,
 )
 
 
@@ -252,8 +262,10 @@ class TestGetPageContentToolHandler:
         handler = GetPageContentToolHandler()
         result = handler.run_tool({"page_name": "Test Page", "format": "json"})
 
-        # Verify result
-        assert str(mock_data) in result[0].text
+        # Verify result is valid JSON (not Python repr)
+        import json
+        parsed = json.loads(result[0].text)
+        assert parsed == mock_data
 
     @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
     @patch("mcp_logseq.tools.logseq.LogSeq")
@@ -499,6 +511,156 @@ class TestDeletePageToolHandler:
         assert "❌ Error: Page 'Test' does not exist" in text
 
 
+class TestDeleteBlockToolHandler:
+    """Test cases for DeleteBlockToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = DeleteBlockToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "delete_block"
+        assert "Delete a block from LogSeq" in tool.description
+        assert tool.inputSchema["required"] == ["block_uuid"]
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_success(self, mock_logseq_class):
+        """Test successful block deletion returns confirmation with UUID."""
+        mock_api = Mock()
+        mock_api.delete_block.return_value = None
+        mock_logseq_class.return_value = mock_api
+
+        handler = DeleteBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "abc-123"})
+
+        mock_api.delete_block.assert_called_once_with("abc-123")
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "✅ Successfully deleted block 'abc-123'" in result[0].text
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    def test_run_tool_missing_block_uuid(self):
+        """Test that omitting block_uuid raises RuntimeError."""
+        handler = DeleteBlockToolHandler()
+
+        with pytest.raises(RuntimeError, match="block_uuid argument required"):
+            handler.run_tool({})
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_value_error_returns_error_message(self, mock_logseq_class):
+        """Test that a ValueError from the API returns an error TextContent."""
+        mock_api = Mock()
+        mock_api.delete_block.side_effect = ValueError("Block 'abc-123' does not exist")
+        mock_logseq_class.return_value = mock_api
+
+        handler = DeleteBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "abc-123"})
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "❌ Error: Block 'abc-123' does not exist" in result[0].text
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_generic_exception_returns_failed_message(
+        self, mock_logseq_class, caplog
+    ):
+        """Test that a generic exception returns a failed TextContent and logs the error."""
+        import logging
+
+        mock_api = Mock()
+        mock_api.delete_block.side_effect = Exception("Unexpected API failure")
+        mock_logseq_class.return_value = mock_api
+
+        handler = DeleteBlockToolHandler()
+
+        with caplog.at_level(logging.ERROR, logger="mcp-logseq"):
+            result = handler.run_tool({"block_uuid": "abc-123"})
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "❌ Failed to delete block 'abc-123'" in result[0].text
+        assert "Unexpected API failure" in result[0].text
+        assert "Failed to delete block" in caplog.text
+
+
+class TestUpdateBlockToolHandler:
+    """Test cases for UpdateBlockToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = UpdateBlockToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "update_block"
+        assert "Update the content of an existing LogSeq block" in tool.description
+        assert tool.inputSchema["required"] == ["block_uuid", "content"]
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_success(self, mock_logseq_class):
+        """Test successful block update returns confirmation with UUID."""
+        mock_api = Mock()
+        mock_api.update_block.return_value = None
+        mock_logseq_class.return_value = mock_api
+
+        handler = UpdateBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "abc-123", "content": "Updated text"})
+
+        mock_api.update_block.assert_called_once_with("abc-123", "Updated text")
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "✅ Successfully updated block 'abc-123'" in result[0].text
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    def test_run_tool_missing_args(self):
+        """Test that omitting required args raises RuntimeError."""
+        handler = UpdateBlockToolHandler()
+
+        with pytest.raises(RuntimeError, match="block_uuid and content arguments required"):
+            handler.run_tool({"block_uuid": "abc-123"})
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_value_error_returns_error_message(self, mock_logseq_class):
+        """Test that a ValueError from the API returns an error TextContent."""
+        mock_api = Mock()
+        mock_api.update_block.side_effect = ValueError("Block 'abc-123' does not exist")
+        mock_logseq_class.return_value = mock_api
+
+        handler = UpdateBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "abc-123", "content": "Updated text"})
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "❌ Error: Block 'abc-123' does not exist" in result[0].text
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_generic_exception_returns_failed_message(
+        self, mock_logseq_class, caplog
+    ):
+        """Test that a generic exception returns a failed TextContent and logs the error."""
+        import logging
+
+        mock_api = Mock()
+        mock_api.update_block.side_effect = Exception("Unexpected API failure")
+        mock_logseq_class.return_value = mock_api
+
+        handler = UpdateBlockToolHandler()
+
+        with caplog.at_level(logging.ERROR, logger="mcp-logseq"):
+            result = handler.run_tool({"block_uuid": "abc-123", "content": "Updated text"})
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "❌ Failed to update block 'abc-123'" in result[0].text
+        assert "Unexpected API failure" in result[0].text
+        assert "Failed to update block" in caplog.text
+
+
 class TestUpdatePageToolHandler:
     """Test cases for the new UpdatePageToolHandler with block parsing."""
 
@@ -649,14 +811,14 @@ class TestSearchToolHandler:
         # Verify API was called
         mock_api.search_content.assert_called_once_with("test", {"limit": 20})
 
-        # Verify result
+        # Verify result (markdown-mode formatting, _db_mode defaults to False)
         text = result[0].text
         assert "# Search Results for 'test'" in text
-        assert "📄 Content Blocks (1 found)" in text
+        assert "Content Blocks (1 found)" in text
         assert "Found content" in text
-        assert "📑 Matching Pages (1 found)" in text
+        assert "Matching Pages (1 found)" in text
         assert "Matching Page" in text
-        assert "Total results found: 2" in text
+        assert "Total results found: 3" in text  # blocks(1) + snippets(1) + pages(1)
 
     @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
     @patch("mcp_logseq.tools.logseq.LogSeq")
@@ -695,3 +857,845 @@ class TestSearchToolHandler:
 
         # Verify API was called with correct options
         mock_api.search_content.assert_called_once_with("test", {"limit": 5})
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_db_mode(self, mock_logseq_class):
+        """Test search with DB-mode response format."""
+        mock_api = Mock()
+        mock_api.search_content.return_value = {
+            "blocks": [
+                {"page?": True, "fullTitle": "Claude Code sessie", "uuid": "page-uuid",
+                 "content": "Claude Code sessie", "page": "page-uuid"},
+                {"page?": False, "content": "[[Claude Code sessie]]", "uuid": "block-uuid",
+                 "page": "00000001-2026-0323-0000-000000000000"},
+            ],
+            "hasMore?": False,
+        }
+        mock_logseq_class.return_value = mock_api
+
+        handler = SearchToolHandler()
+        with patch("mcp_logseq.tools._db_mode", True):
+            result = handler.run_tool({"query": "Claude Code sessie"})
+
+        text = result[0].text
+        assert "Matching Pages (1 found)" in text
+        assert "Claude Code sessie" in text
+        assert "Content Blocks (1 found)" in text
+        assert "block-uuid" in text
+        assert "Total results found: 2" in text
+
+
+class TestQueryToolHandler:
+    """Test cases for QueryToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = QueryToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "query"
+        assert "Execute a Logseq DSL query" in tool.description
+        assert "query" in tool.inputSchema["properties"]
+        assert "limit" in tool.inputSchema["properties"]
+        assert "result_type" in tool.inputSchema["properties"]
+        assert tool.inputSchema["required"] == ["query"]
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_success(self, mock_logseq_class):
+        """Test successful DSL query."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = [
+            {"originalName": "Customer/Orienteme", "propertiesTextValues": {"type": "customer"}},
+            {"originalName": "Customer/InsideOut", "propertiesTextValues": {"type": "customer"}}
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = QueryToolHandler()
+        result = handler.run_tool({"query": "(page-property type customer)"})
+
+        mock_api.query_dsl.assert_called_once_with("(page-property type customer)")
+
+        text = result[0].text
+        assert "# Query Results" in text
+        assert "(page-property type customer)" in text
+        assert "Customer/Orienteme" in text
+        assert "Customer/InsideOut" in text
+        assert "Total: 2 results" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_empty_results(self, mock_logseq_class):
+        """Test query with no results."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = []
+        mock_logseq_class.return_value = mock_api
+
+        handler = QueryToolHandler()
+        result = handler.run_tool({"query": "(page-property nonexistent)"})
+
+        text = result[0].text
+        assert "No results found for query" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_with_limit(self, mock_logseq_class):
+        """Test query with limit parameter."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = [
+            {"originalName": f"Page{i}"} for i in range(10)
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = QueryToolHandler()
+        result = handler.run_tool({"query": "(page-property type)", "limit": 3})
+
+        text = result[0].text
+        assert "Page0" in text
+        assert "Page2" in text
+        assert "Showing 3 of 10 results" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_result_type_pages_only(self, mock_logseq_class):
+        """Test query filtered to pages only."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = [
+            {"originalName": "Customer/Test"},
+            {"content": "Block content"}
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = QueryToolHandler()
+        result = handler.run_tool({"query": "(page-property type)", "result_type": "pages_only"})
+
+        text = result[0].text
+        assert "Customer/Test" in text
+        assert "Block content" not in text
+        assert "Total: 1 results" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_result_type_blocks_only(self, mock_logseq_class):
+        """Test query filtered to blocks only."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = [
+            {"originalName": "Customer/Test"},
+            {"content": "Block content"}
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = QueryToolHandler()
+        result = handler.run_tool({"query": "(task todo)", "result_type": "blocks_only"})
+
+        text = result[0].text
+        assert "Customer/Test" not in text
+        assert "Block content" in text
+        assert "Total: 1 results" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_invalid_query(self, mock_logseq_class):
+        """Test error handling for invalid query."""
+        mock_api = Mock()
+        mock_api.query_dsl.side_effect = Exception("Invalid query syntax")
+        mock_logseq_class.return_value = mock_api
+
+        handler = QueryToolHandler()
+        result = handler.run_tool({"query": "(invalid"})
+
+        text = result[0].text
+        assert "Query failed" in text
+        assert "Invalid query syntax" in text
+        assert "https://docs.logseq.com" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    def test_run_tool_missing_args(self):
+        """Test missing required argument."""
+        handler = QueryToolHandler()
+
+        with pytest.raises(RuntimeError, match="query argument required"):
+            handler.run_tool({})
+
+
+class TestFindPagesByPropertyToolHandler:
+    """Test cases for FindPagesByPropertyToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = FindPagesByPropertyToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "find_pages_by_property"
+        assert "Find all pages that have a specific property" in tool.description
+        assert "property_name" in tool.inputSchema["properties"]
+        assert "property_value" in tool.inputSchema["properties"]
+        assert "limit" in tool.inputSchema["properties"]
+        assert tool.inputSchema["required"] == ["property_name"]
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_with_value(self, mock_logseq_class):
+        """Test property search with specific value."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = [
+            {"originalName": "Customer/Orienteme", "propertiesTextValues": {"type": "customer"}}
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = FindPagesByPropertyToolHandler()
+        result = handler.run_tool({"property_name": "type", "property_value": "customer"})
+
+        mock_api.query_dsl.assert_called_once_with('(page-property type "customer")')
+
+        text = result[0].text
+        assert "Pages with 'type = customer'" in text
+        assert "Customer/Orienteme" in text
+        assert "Total: 1 pages" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_without_value(self, mock_logseq_class):
+        """Test property search without specific value."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = [
+            {"originalName": "Customer/Orienteme", "propertiesTextValues": {"type": "customer"}},
+            {"originalName": "Projects/Website", "propertiesTextValues": {"type": "project"}}
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = FindPagesByPropertyToolHandler()
+        result = handler.run_tool({"property_name": "type"})
+
+        mock_api.query_dsl.assert_called_once_with('(page-property type)')
+
+        text = result[0].text
+        assert "Pages with property 'type'" in text
+        assert "Customer/Orienteme" in text
+        assert "type: customer" in text
+        assert "Projects/Website" in text
+        assert "type: project" in text
+        assert "Total: 2 pages" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_empty_results(self, mock_logseq_class):
+        """Test property search with no results."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = []
+        mock_logseq_class.return_value = mock_api
+
+        handler = FindPagesByPropertyToolHandler()
+        result = handler.run_tool({"property_name": "nonexistent"})
+
+        text = result[0].text
+        assert "No pages found with property 'nonexistent'" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_with_limit(self, mock_logseq_class):
+        """Test property search with limit."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = [
+            {"originalName": f"Page{i}"} for i in range(10)
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = FindPagesByPropertyToolHandler()
+        result = handler.run_tool({"property_name": "type", "limit": 3})
+
+        text = result[0].text
+        assert "Page0" in text
+        assert "Page2" in text
+        assert "Showing 3 of 10 pages" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_escapes_quotes(self, mock_logseq_class):
+        """Test that quotes in property values are escaped."""
+        mock_api = Mock()
+        mock_api.query_dsl.return_value = []
+        mock_logseq_class.return_value = mock_api
+
+        handler = FindPagesByPropertyToolHandler()
+        handler.run_tool({"property_name": "status", "property_value": 'in "progress"'})
+
+        mock_api.query_dsl.assert_called_once_with('(page-property status "in \\"progress\\"")')
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    def test_run_tool_missing_args(self):
+        """Test missing required argument."""
+        handler = FindPagesByPropertyToolHandler()
+
+        with pytest.raises(RuntimeError, match="property_name argument required"):
+            handler.run_tool({})
+class TestGetPagesFromNamespaceToolHandler:
+    """Test cases for GetPagesFromNamespaceToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = GetPagesFromNamespaceToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "get_pages_from_namespace"
+        assert "namespace" in tool.description.lower()
+        assert "namespace" in tool.inputSchema["properties"]
+        assert "namespace" in tool.inputSchema["required"]
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_success(self, mock_logseq_class):
+        """Test successful namespace pages retrieval."""
+        # Setup mock
+        mock_api = Mock()
+        mock_api.get_pages_from_namespace.return_value = [
+            {"originalName": "Customer/InsideOut"},
+            {"originalName": "Customer/Orienteme"}
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetPagesFromNamespaceToolHandler()
+        result = handler.run_tool({"namespace": "Customer"})
+
+        # Verify API was called correctly
+        mock_api.get_pages_from_namespace.assert_called_once_with("Customer")
+
+        # Verify result
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        text = result[0].text
+        assert "Customer/InsideOut" in text
+        assert "Customer/Orienteme" in text
+        assert "Total: 2 pages" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_empty_namespace(self, mock_logseq_class):
+        """Test namespace with no pages."""
+        # Setup mock
+        mock_api = Mock()
+        mock_api.get_pages_from_namespace.return_value = []
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetPagesFromNamespaceToolHandler()
+        result = handler.run_tool({"namespace": "EmptyNamespace"})
+
+        # Verify result
+        text = result[0].text
+        assert "No pages found in namespace 'EmptyNamespace'" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    def test_run_tool_missing_args(self):
+        """Test tool with missing namespace argument."""
+        handler = GetPagesFromNamespaceToolHandler()
+
+        with pytest.raises(RuntimeError, match="namespace argument required"):
+            handler.run_tool({})
+
+
+class TestGetPagesTreeFromNamespaceToolHandler:
+    """Test cases for GetPagesTreeFromNamespaceToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = GetPagesTreeFromNamespaceToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "get_pages_tree_from_namespace"
+        assert "tree" in tool.description.lower()
+        assert "namespace" in tool.inputSchema["properties"]
+        assert "namespace" in tool.inputSchema["required"]
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_success(self, mock_logseq_class):
+        """Test successful namespace tree retrieval."""
+        # Setup mock with hierarchical data
+        mock_api = Mock()
+        mock_api.get_pages_tree_from_namespace.return_value = [
+            {
+                "originalName": "Projects/2024",
+                "children": [
+                    {"originalName": "Projects/2024/ClientA", "children": []},
+                    {"originalName": "Projects/2024/ClientB", "children": []}
+                ]
+            },
+            {
+                "originalName": "Projects/Archive",
+                "children": []
+            }
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetPagesTreeFromNamespaceToolHandler()
+        result = handler.run_tool({"namespace": "Projects"})
+
+        # Verify API was called correctly
+        mock_api.get_pages_tree_from_namespace.assert_called_once_with("Projects")
+
+        # Verify result
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        text = result[0].text
+        assert "Projects/2024" in text
+        assert "Projects/2024/ClientA" in text
+        assert "Projects/2024/ClientB" in text
+        assert "Projects/Archive" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_empty_namespace(self, mock_logseq_class):
+        """Test namespace tree with no pages."""
+        # Setup mock
+        mock_api = Mock()
+        mock_api.get_pages_tree_from_namespace.return_value = []
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetPagesTreeFromNamespaceToolHandler()
+        result = handler.run_tool({"namespace": "EmptyNamespace"})
+
+        # Verify result
+        text = result[0].text
+        assert "No pages found in namespace 'EmptyNamespace'" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    def test_run_tool_missing_args(self):
+        """Test tool with missing namespace argument."""
+        handler = GetPagesTreeFromNamespaceToolHandler()
+
+        with pytest.raises(RuntimeError, match="namespace argument required"):
+            handler.run_tool({})
+
+
+class TestRenamePageToolHandler:
+    """Test cases for RenamePageToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = RenamePageToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "rename_page"
+        assert "rename" in tool.description.lower()
+        assert "old_name" in tool.inputSchema["properties"]
+        assert "new_name" in tool.inputSchema["properties"]
+        assert "old_name" in tool.inputSchema["required"]
+        assert "new_name" in tool.inputSchema["required"]
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_success(self, mock_logseq_class):
+        """Test successful page rename."""
+        # Setup mock
+        mock_api = Mock()
+        mock_api.rename_page.return_value = None
+        mock_logseq_class.return_value = mock_api
+
+        handler = RenamePageToolHandler()
+        result = handler.run_tool({"old_name": "OldPage", "new_name": "NewPage"})
+
+        # Verify API was called correctly
+        mock_api.rename_page.assert_called_once_with("OldPage", "NewPage")
+
+        # Verify result
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        text = result[0].text
+        assert "Successfully renamed" in text
+        assert "OldPage" in text
+        assert "NewPage" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_source_not_found(self, mock_logseq_class):
+        """Test rename with non-existent source page."""
+        # Setup mock to raise ValueError
+        mock_api = Mock()
+        mock_api.rename_page.side_effect = ValueError("Page 'NonExistent' does not exist")
+        mock_logseq_class.return_value = mock_api
+
+        handler = RenamePageToolHandler()
+        result = handler.run_tool({"old_name": "NonExistent", "new_name": "NewPage"})
+
+        # Verify error message
+        text = result[0].text
+        assert "does not exist" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_target_exists(self, mock_logseq_class):
+        """Test rename to existing page name."""
+        # Setup mock to raise ValueError
+        mock_api = Mock()
+        mock_api.rename_page.side_effect = ValueError("Page 'ExistingPage' already exists")
+        mock_logseq_class.return_value = mock_api
+
+        handler = RenamePageToolHandler()
+        result = handler.run_tool({"old_name": "OldPage", "new_name": "ExistingPage"})
+
+        # Verify error message
+        text = result[0].text
+        assert "already exists" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    def test_run_tool_missing_args(self):
+        """Test tool with missing arguments."""
+        handler = RenamePageToolHandler()
+
+        with pytest.raises(RuntimeError, match="old_name and new_name arguments required"):
+            handler.run_tool({"old_name": "OnlyOld"})
+
+
+class TestGetPageBacklinksToolHandler:
+    """Test cases for GetPageBacklinksToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = GetPageBacklinksToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "get_page_backlinks"
+        assert "backlink" in tool.description.lower()
+        assert "page_name" in tool.inputSchema["properties"]
+        assert "include_content" in tool.inputSchema["properties"]
+        assert "page_name" in tool.inputSchema["required"]
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_success(self, mock_logseq_class):
+        """Test successful backlinks retrieval."""
+        # Setup mock with backlinks data
+        mock_api = Mock()
+        mock_api.get_page_linked_references.return_value = [
+            [
+                {"originalName": "Dec 15th, 2024"},
+                [
+                    {"content": "session [[Customer/Orienteme]]"},
+                    {"content": "followup with [[Customer/Orienteme]] team"}
+                ]
+            ],
+            [
+                {"originalName": "Projects/AI Consulting"},
+                [
+                    {"content": "Active client: [[Customer/Orienteme]]"}
+                ]
+            ]
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetPageBacklinksToolHandler()
+        result = handler.run_tool({"page_name": "Customer/Orienteme"})
+
+        # Verify API was called correctly
+        mock_api.get_page_linked_references.assert_called_once_with("Customer/Orienteme")
+
+        # Verify result
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        text = result[0].text
+        assert "Dec 15th, 2024" in text
+        assert "Projects/AI Consulting" in text
+        assert "2 references" in text
+        assert "1 reference" in text
+        assert "Total: 2 pages, 3 references" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_no_backlinks(self, mock_logseq_class):
+        """Test page with no backlinks."""
+        # Setup mock
+        mock_api = Mock()
+        mock_api.get_page_linked_references.return_value = []
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetPageBacklinksToolHandler()
+        result = handler.run_tool({"page_name": "OrphanPage"})
+
+        # Verify result
+        text = result[0].text
+        assert "No backlinks found for page 'OrphanPage'" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_without_content(self, mock_logseq_class):
+        """Test backlinks without including block content."""
+        # Setup mock
+        mock_api = Mock()
+        mock_api.get_page_linked_references.return_value = [
+            [
+                {"originalName": "Source Page"},
+                [{"content": "Reference to [[Target]]"}]
+            ]
+        ]
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetPageBacklinksToolHandler()
+        result = handler.run_tool({"page_name": "Target", "include_content": False})
+
+        # Verify result shows page but not detailed content
+        text = result[0].text
+        assert "Source Page" in text
+        assert "1 reference" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    def test_run_tool_missing_args(self):
+        """Test tool with missing page_name argument."""
+        handler = GetPageBacklinksToolHandler()
+
+        with pytest.raises(RuntimeError, match="page_name argument required"):
+            handler.run_tool({})
+
+
+class TestInsertNestedBlockToolHandler:
+    """Test cases for InsertNestedBlockToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = InsertNestedBlockToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "insert_nested_block"
+        assert "child" in tool.description.lower() or "nested" in tool.description.lower()
+        assert "parent_block_uuid" in tool.inputSchema["properties"]
+        assert "content" in tool.inputSchema["properties"]
+        assert "sibling" in tool.inputSchema["properties"]
+        assert tool.inputSchema["required"] == ["parent_block_uuid", "content"]
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_insert_child_success(self, mock_logseq_class):
+        """Test successful child block insertion."""
+        mock_api = Mock()
+        mock_api.insert_block_as_child.return_value = {
+            "uuid": "new-block-uuid",
+            "content": "Child block content"
+        }
+        mock_logseq_class.return_value = mock_api
+
+        handler = InsertNestedBlockToolHandler()
+        result = handler.run_tool({
+            "parent_block_uuid": "parent-uuid",
+            "content": "Child block content"
+        })
+
+        mock_api.insert_block_as_child.assert_called_once_with(
+            parent_block_uuid="parent-uuid",
+            content="Child block content",
+            properties=None,
+            sibling=False
+        )
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        text = result[0].text
+        assert "✅" in text
+        assert "child" in text
+        assert "new-block-uuid" in text
+        assert "parent-uuid" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_insert_sibling_success(self, mock_logseq_class):
+        """Test successful sibling block insertion."""
+        mock_api = Mock()
+        mock_api.insert_block_as_child.return_value = {
+            "uuid": "sibling-block-uuid",
+            "content": "Sibling content"
+        }
+        mock_logseq_class.return_value = mock_api
+
+        handler = InsertNestedBlockToolHandler()
+        result = handler.run_tool({
+            "parent_block_uuid": "ref-uuid",
+            "content": "Sibling content",
+            "sibling": True
+        })
+
+        mock_api.insert_block_as_child.assert_called_once_with(
+            parent_block_uuid="ref-uuid",
+            content="Sibling content",
+            properties=None,
+            sibling=True
+        )
+        text = result[0].text
+        assert "✅" in text
+        assert "sibling" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_with_properties(self, mock_logseq_class):
+        """Test block insertion with properties."""
+        mock_api = Mock()
+        mock_api.insert_block_as_child.return_value = {"uuid": "todo-uuid"}
+        mock_logseq_class.return_value = mock_api
+
+        handler = InsertNestedBlockToolHandler()
+        result = handler.run_tool({
+            "parent_block_uuid": "parent-uuid",
+            "content": "Do something",
+            "properties": {"marker": "TODO"}
+        })
+
+        mock_api.insert_block_as_child.assert_called_once_with(
+            parent_block_uuid="parent-uuid",
+            content="Do something",
+            properties={"marker": "TODO"},
+            sibling=False
+        )
+        assert "✅" in result[0].text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    @patch('mcp_logseq.tools.logseq.LogSeq')
+    def test_run_tool_api_error(self, mock_logseq_class):
+        """Test API failure returns error message."""
+        mock_api = Mock()
+        mock_api.insert_block_as_child.side_effect = Exception("Block not found")
+        mock_logseq_class.return_value = mock_api
+
+        handler = InsertNestedBlockToolHandler()
+        result = handler.run_tool({
+            "parent_block_uuid": "bad-uuid",
+            "content": "Content"
+        })
+
+        text = result[0].text
+        assert "❌" in text
+        assert "Block not found" in text
+
+    @patch.dict('os.environ', {'LOGSEQ_API_TOKEN': 'test_token'})
+    def test_run_tool_missing_args(self):
+        """Test tool with missing required arguments."""
+        handler = InsertNestedBlockToolHandler()
+
+        with pytest.raises(RuntimeError, match="parent_block_uuid and content arguments required"):
+            handler.run_tool({"parent_block_uuid": "uuid"})
+
+
+class TestGetBlockToolHandler:
+    """Test cases for GetBlockToolHandler."""
+
+    def test_get_tool_description(self):
+        """Test tool description schema."""
+        handler = GetBlockToolHandler()
+        tool = handler.get_tool_description()
+
+        assert tool.name == "get_block"
+        assert "Get a single block" in tool.description
+        assert tool.inputSchema["required"] == ["block_uuid"]
+        assert "include_children" in tool.inputSchema["properties"]
+        assert "format" in tool.inputSchema["properties"]
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_success_text_format(self, mock_logseq_class):
+        """Test successful block retrieval in text format."""
+        mock_api = Mock()
+        mock_api.get_block.return_value = {
+            "uuid": "abc-123",
+            "content": "Parent block content",
+            "properties": {},
+            "children": [
+                {
+                    "uuid": "child-1",
+                    "content": "Child block 1",
+                    "properties": {},
+                    "children": [],
+                }
+            ],
+        }
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "abc-123"})
+
+        mock_api.get_block.assert_called_once_with("abc-123", include_children=True)
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "Parent block content" in result[0].text
+        assert "Child block 1" in result[0].text
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_success_json_format(self, mock_logseq_class):
+        """Test successful block retrieval in JSON format."""
+        block_data = {
+            "uuid": "abc-123",
+            "content": "Block content",
+            "properties": {"priority": "high"},
+            "children": [],
+        }
+        mock_api = Mock()
+        mock_api.get_block.return_value = block_data
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "abc-123", "format": "json"})
+
+        assert len(result) == 1
+        import json
+        parsed = json.loads(result[0].text)
+        assert parsed["uuid"] == "abc-123"
+        assert parsed["properties"]["priority"] == "high"
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_without_children(self, mock_logseq_class):
+        """Test block retrieval with include_children=false."""
+        mock_api = Mock()
+        mock_api.get_block.return_value = {
+            "uuid": "abc-123",
+            "content": "Leaf block",
+            "properties": {},
+            "children": [],
+        }
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "abc-123", "include_children": False})
+
+        mock_api.get_block.assert_called_once_with("abc-123", include_children=False)
+        assert "Leaf block" in result[0].text
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    def test_run_tool_missing_block_uuid(self):
+        """Test that omitting block_uuid raises RuntimeError."""
+        handler = GetBlockToolHandler()
+
+        with pytest.raises(RuntimeError, match="block_uuid argument required"):
+            handler.run_tool({})
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_block_not_found(self, mock_logseq_class):
+        """Test that a ValueError (block not found) returns an error TextContent."""
+        mock_api = Mock()
+        mock_api.get_block.side_effect = ValueError("Block 'bad-uuid' not found")
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetBlockToolHandler()
+        result = handler.run_tool({"block_uuid": "bad-uuid"})
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "Error: Block 'bad-uuid' not found" in result[0].text
+
+    @patch.dict("os.environ", {"LOGSEQ_API_TOKEN": "test_token"})
+    @patch("mcp_logseq.tools.logseq.LogSeq")
+    def test_run_tool_generic_exception(self, mock_logseq_class, caplog):
+        """Test that a generic exception returns a failed TextContent and logs the error."""
+        import logging
+
+        mock_api = Mock()
+        mock_api.get_block.side_effect = Exception("Unexpected API failure")
+        mock_logseq_class.return_value = mock_api
+
+        handler = GetBlockToolHandler()
+
+        with caplog.at_level(logging.ERROR, logger="mcp-logseq"):
+            result = handler.run_tool({"block_uuid": "abc-123"})
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "Failed to get block 'abc-123'" in result[0].text
+        assert "Unexpected API failure" in result[0].text
+        assert "Failed to get block" in caplog.text

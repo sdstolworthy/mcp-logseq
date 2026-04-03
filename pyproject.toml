@@ -1,6 +1,6 @@
 [project]
 name = "mcp-logseq"
-version = "1.0.1"
+version = "1.6.2"
 description = "MCP server to work with LogSeq via the local HTTP server"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,6 +36,9 @@ email = "salih.ergut@oredata.com"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
 [dependency-groups]
 dev = [
     "pyright>=1.1.389",
@@ -45,5 +48,14 @@ dev = [
     "pytest-asyncio>=0.21.0",
 ]
 
+[project.optional-dependencies]
+vector = [
+    "lancedb>=0.6",
+    "watchdog>=4.0",
+    "pyarrow>=14.0",
+    "portalocker>=2.0",
+]
+
 [project.scripts]
 mcp-logseq = "mcp_logseq:main"
+logseq-sync = "mcp_logseq.bin.logseq_sync:main"

@@ -241,7 +241,7 @@ class TestLogSeqAPI:
         body = responses.calls[0].request.body
         assert body is not None
         request_data = json.loads(body)
-        assert request_data["method"] == "logseq.search"
+        assert request_data["method"] == "logseq.App.search"
         assert request_data["args"] == ["test query", {}]
 
     @responses.activate
@@ -263,3 +263,480 @@ class TestLogSeqAPI:
         assert body is not None
         request_data = json.loads(body)
         assert request_data["args"] == ["test query", options]
+
+    @responses.activate
+    def test_delete_block_success(self, logseq_client):
+        """Test successful block deletion calls removeBlock with the UUID."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            body="null",
+            status=200,
+            content_type="application/json",
+        )
+
+        logseq_client.delete_block("block-uuid-abc")
+
+        assert len(responses.calls) == 1
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["method"] == "logseq.Editor.removeBlock"
+        assert request_data["args"] == ["block-uuid-abc"]
+
+    @responses.activate
+    def test_delete_block_http_error(self, logseq_client):
+        """Test that an HTTP error from the API propagates as an exception."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json={"error": "Not found"},
+            status=404,
+        )
+
+        with pytest.raises(requests.exceptions.HTTPError):
+            logseq_client.delete_block("block-uuid-missing")
+
+    @responses.activate
+    def test_delete_block_network_error(self, logseq_client):
+        """Test that a network/connection error propagates as an exception."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            body=requests.exceptions.ConnectionError("Connection refused"),
+        )
+
+        with pytest.raises(requests.exceptions.ConnectionError):
+            logseq_client.delete_block("block-uuid-abc")
+
+
+    @responses.activate
+    def test_update_block_success(self, logseq_client):
+        """Test successful block update calls updateBlock with UUID and content."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            body="null",
+            status=200,
+            content_type="application/json",
+        )
+
+        logseq_client.update_block("block-uuid-abc", "Updated content")
+
+        assert len(responses.calls) == 1
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["method"] == "logseq.Editor.updateBlock"
+        assert request_data["args"] == ["block-uuid-abc", "Updated content"]
+
+    @responses.activate
+    def test_update_block_http_error(self, logseq_client):
+        """Test that an HTTP error from updateBlock propagates as an exception."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json={"error": "Not found"},
+            status=404,
+        )
+
+        with pytest.raises(requests.exceptions.HTTPError):
+            logseq_client.update_block("block-uuid-missing", "Updated")
+
+    @responses.activate
+    def test_update_block_network_error(self, logseq_client):
+        """Test that a network/connection error propagates for updateBlock."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            body=requests.exceptions.ConnectionError("Connection refused"),
+        )
+
+        with pytest.raises(requests.exceptions.ConnectionError):
+            logseq_client.update_block("block-uuid-abc", "Updated")
+
+    @responses.activate
+    def test_query_dsl_success(self, logseq_client, mock_logseq_responses):
+        """Test successful DSL query."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=mock_logseq_responses["query_dsl_pages_success"],
+            status=200
+        )
+
+        result = logseq_client.query_dsl("(page-property type customer)")
+        assert result == mock_logseq_responses["query_dsl_pages_success"]
+
+        # Verify the request
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["method"] == "logseq.DB.q"
+        assert request_data["args"] == ["(page-property type customer)"]
+
+    @responses.activate
+    def test_query_dsl_empty_results(self, logseq_client, mock_logseq_responses):
+        """Test DSL query with no results."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=mock_logseq_responses["query_dsl_empty"],
+            status=200
+        )
+
+        result = logseq_client.query_dsl("(page-property nonexistent)")
+        assert result == []
+
+    @responses.activate
+    def test_query_dsl_network_error(self, logseq_client):
+        """Test DSL query with network error."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            body=requests.exceptions.ConnectionError("Connection failed")
+        )
+
+        with pytest.raises(requests.exceptions.ConnectionError):
+            logseq_client.query_dsl("(page-property type)")
+    @responses.activate
+    def test_get_pages_from_namespace_success(self, logseq_client, mock_logseq_responses):
+        """Test successful namespace pages retrieval."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=mock_logseq_responses["get_pages_from_namespace_success"],
+            status=200
+        )
+
+        result = logseq_client.get_pages_from_namespace("Customer")
+        assert result == mock_logseq_responses["get_pages_from_namespace_success"]
+
+        # Verify the request
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["method"] == "logseq.Editor.getPagesFromNamespace"
+        assert request_data["args"] == ["Customer"]
+
+    @responses.activate
+    def test_get_pages_from_namespace_empty(self, logseq_client):
+        """Test namespace pages retrieval with no results."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=[],
+            status=200
+        )
+
+        result = logseq_client.get_pages_from_namespace("EmptyNamespace")
+        assert result == []
+
+    @responses.activate
+    def test_get_pages_tree_from_namespace_success(self, logseq_client, mock_logseq_responses):
+        """Test successful namespace tree retrieval."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=mock_logseq_responses["get_pages_tree_from_namespace_success"],
+            status=200
+        )
+
+        result = logseq_client.get_pages_tree_from_namespace("Projects")
+        assert result == mock_logseq_responses["get_pages_tree_from_namespace_success"]
+
+        # Verify the request
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["method"] == "logseq.Editor.getPagesTreeFromNamespace"
+        assert request_data["args"] == ["Projects"]
+
+    @responses.activate
+    def test_get_pages_tree_from_namespace_empty(self, logseq_client):
+        """Test namespace tree retrieval with no results."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=[],
+            status=200
+        )
+
+        result = logseq_client.get_pages_tree_from_namespace("EmptyNamespace")
+        assert result == []
+
+    @responses.activate
+    def test_rename_page_success(self, logseq_client, mock_logseq_responses):
+        """Test successful page rename."""
+        # Mock list_pages for validation
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=[
+                {"originalName": "OldPage"},
+                {"originalName": "OtherPage"}
+            ],
+            status=200
+        )
+
+        # Mock rename call (returns null on success)
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            body='null',
+            status=200,
+            content_type='application/json'
+        )
+
+        result = logseq_client.rename_page("OldPage", "NewPage")
+        assert result is None
+
+        # Verify the rename request
+        request_data = json.loads(responses.calls[1].request.body)
+        assert request_data["method"] == "logseq.Editor.renamePage"
+        assert request_data["args"] == ["OldPage", "NewPage"]
+
+    @responses.activate
+    def test_rename_page_source_not_found(self, logseq_client):
+        """Test rename with non-existent source page."""
+        # Mock list_pages - source doesn't exist
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=[
+                {"originalName": "OtherPage"}
+            ],
+            status=200
+        )
+
+        with pytest.raises(ValueError, match="does not exist"):
+            logseq_client.rename_page("NonExistent", "NewPage")
+
+    @responses.activate
+    def test_rename_page_target_exists(self, logseq_client):
+        """Test rename to existing page name."""
+        # Mock list_pages - target already exists
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=[
+                {"originalName": "OldPage"},
+                {"originalName": "ExistingPage"}
+            ],
+            status=200
+        )
+
+        with pytest.raises(ValueError, match="already exists"):
+            logseq_client.rename_page("OldPage", "ExistingPage")
+
+    @responses.activate
+    def test_get_page_linked_references_success(self, logseq_client, mock_logseq_responses):
+        """Test successful backlinks retrieval."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=mock_logseq_responses["get_page_linked_references_success"],
+            status=200
+        )
+
+        result = logseq_client.get_page_linked_references("Customer/Orienteme")
+        assert result == mock_logseq_responses["get_page_linked_references_success"]
+
+        # Verify the request
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["method"] == "logseq.Editor.getPageLinkedReferences"
+        assert request_data["args"] == ["Customer/Orienteme"]
+
+    @responses.activate
+    def test_get_page_linked_references_empty(self, logseq_client):
+        """Test backlinks retrieval with no results."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=[],
+            status=200
+        )
+
+        result = logseq_client.get_page_linked_references("OrphanPage")
+        assert result == []
+
+    @responses.activate
+    def test_insert_block_as_child_success(self, logseq_client):
+        """Test inserting a child block under a parent."""
+        new_block = {"uuid": "child-uuid", "content": "Child content"}
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=new_block,
+            status=200
+        )
+
+        result = logseq_client.insert_block_as_child("parent-uuid", "Child content")
+
+        assert result == new_block
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["method"] == "logseq.Editor.insertBlock"
+        assert request_data["args"][0] == "parent-uuid"
+        assert request_data["args"][1] == "Child content"
+        assert request_data["args"][2]["sibling"] is False
+
+    @responses.activate
+    def test_insert_block_as_sibling(self, logseq_client):
+        """Test inserting a sibling block."""
+        new_block = {"uuid": "sibling-uuid", "content": "Sibling content"}
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=new_block,
+            status=200
+        )
+
+        result = logseq_client.insert_block_as_child("ref-uuid", "Sibling content", sibling=True)
+
+        assert result == new_block
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["args"][2]["sibling"] is True
+
+    @responses.activate
+    def test_insert_block_as_child_with_properties(self, logseq_client):
+        """Test inserting a child block with properties."""
+        new_block = {"uuid": "todo-uuid", "content": "Task"}
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=new_block,
+            status=200
+        )
+
+        result = logseq_client.insert_block_as_child(
+            "parent-uuid", "Task", properties={"marker": "TODO"}
+        )
+
+        assert result == new_block
+        request_data = json.loads(responses.calls[0].request.body)
+        assert request_data["args"][2]["properties"] == {"marker": "TODO"}
+
+    def test_append_block_recursive_root_level(self, logseq_client):
+        """Test _append_block_recursive at root level calls append_block_in_page."""
+        from unittest.mock import patch, Mock
+
+        mock_result = {"uuid": "root-uuid"}
+        with patch.object(logseq_client, "append_block_in_page", return_value=mock_result) as mock_append:
+            with patch.object(logseq_client, "insert_block_as_child") as mock_insert:
+                block = {"content": "Root block", "children": []}
+                logseq_client._append_block_recursive("TestPage", block, parent_uuid=None)
+
+                mock_append.assert_called_once_with("TestPage", "Root block", None)
+                mock_insert.assert_not_called()
+
+    def test_append_block_recursive_nested(self, logseq_client):
+        """Test _append_block_recursive uses insert_block_as_child when parent_uuid given."""
+        from unittest.mock import patch
+
+        mock_result = {"uuid": "child-uuid"}
+        with patch.object(logseq_client, "append_block_in_page") as mock_append:
+            with patch.object(logseq_client, "insert_block_as_child", return_value=mock_result) as mock_insert:
+                block = {"content": "Child block", "children": []}
+                logseq_client._append_block_recursive("TestPage", block, parent_uuid="parent-uuid")
+
+                mock_insert.assert_called_once_with("parent-uuid", "Child block", None)
+                mock_append.assert_not_called()
+
+    def test_append_block_recursive_with_children(self, logseq_client):
+        """Test _append_block_recursive recurses into children with correct parent UUID."""
+        from unittest.mock import patch, call
+
+        call_order = []
+
+        def fake_append(page, content, props):
+            uuid = f"uuid-{content}"
+            call_order.append(("append", content))
+            return {"uuid": uuid}
+
+        def fake_insert(parent_uuid, content, props):
+            call_order.append(("insert", content, parent_uuid))
+            return {"uuid": f"uuid-{content}"}
+
+        with patch.object(logseq_client, "append_block_in_page", side_effect=fake_append):
+            with patch.object(logseq_client, "insert_block_as_child", side_effect=fake_insert):
+                block = {
+                    "content": "Parent",
+                    "children": [
+                        {"content": "Child1", "children": []},
+                        {"content": "Child2", "children": []},
+                    ]
+                }
+                logseq_client._append_block_recursive("TestPage", block, parent_uuid=None)
+
+        # Root block appended to page
+        assert call_order[0] == ("append", "Parent")
+        # Children inserted under root's uuid
+        assert call_order[1] == ("insert", "Child1", "uuid-Parent")
+        assert call_order[2] == ("insert", "Child2", "uuid-Parent")
+
+
+class TestGetBlock:
+    """Test cases for the get_block API method."""
+
+    @responses.activate
+    def test_get_block_success(self, logseq_client):
+        """Test successful block retrieval."""
+        block_data = {
+            "uuid": "abc-123",
+            "content": "Test block",
+            "properties": {},
+            "children": [],
+        }
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=block_data,
+            status=200,
+        )
+
+        result = logseq_client.get_block("abc-123")
+        assert result["uuid"] == "abc-123"
+        assert result["content"] == "Test block"
+
+        # Verify the API was called with correct method and args
+        request_body = json.loads(responses.calls[0].request.body)
+        assert request_body["method"] == "logseq.Editor.getBlock"
+        assert request_body["args"] == ["abc-123", {"includeChildren": True}]
+
+    @responses.activate
+    def test_get_block_without_children(self, logseq_client):
+        """Test block retrieval without children."""
+        block_data = {
+            "uuid": "abc-123",
+            "content": "Test block",
+            "properties": {},
+        }
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json=block_data,
+            status=200,
+        )
+
+        result = logseq_client.get_block("abc-123", include_children=False)
+        assert result["uuid"] == "abc-123"
+
+        request_body = json.loads(responses.calls[0].request.body)
+        assert request_body["args"] == ["abc-123", {"includeChildren": False}]
+
+    @responses.activate
+    def test_get_block_not_found(self, logseq_client):
+        """Test block retrieval when block does not exist."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            body="null",
+            content_type="application/json",
+            status=200,
+        )
+
+        with pytest.raises(ValueError, match="Block 'bad-uuid' not found"):
+            logseq_client.get_block("bad-uuid")
+
+    @responses.activate
+    def test_get_block_api_error(self, logseq_client):
+        """Test block retrieval when API returns an error."""
+        responses.add(
+            responses.POST,
+            "http://127.0.0.1:12315/api",
+            json={"error": "Internal server error"},
+            status=500,
+        )
+
+        with pytest.raises(Exception):
+            logseq_client.get_block("abc-123")

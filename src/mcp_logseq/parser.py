@@ -27,13 +27,15 @@ class BlockNode:
 
     def to_batch_format(self) -> dict[str, Any]:
         """Convert to Logseq IBatchBlock format."""
-        result: dict[str, Any] = {"content": self.content}
+        content = self.content
+        if self.properties:
+            prop_lines = [f"{k}:: {v}" for k, v in self.properties.items()]
+            content = content + "\n" + "\n".join(prop_lines)
+
+        result: dict[str, Any] = {"content": content}
 
         if self.children:
             result["children"] = [child.to_batch_format() for child in self.children]
-
-        if self.properties:
-            result["properties"] = self.properties
 
         return result
 
@@ -60,7 +62,9 @@ CAPITALIZED_MARKER_PATTERN = re.compile(r"^(\s*)([A-Z][A-Z0-9_-]{2,})\s+(.+)$")
 BLOCKQUOTE_PATTERN = re.compile(r"^(\s*)(>+)\s*(.*)$")
 HORIZONTAL_RULE_PATTERN = re.compile(r"^(\s*)[-*_]{3,}\s*$")
 FENCED_CODE_START = re.compile(r"^(\s*)```(\w*)(.*)$")
+LOGSEQ_PROPERTY_PATTERN = re.compile(r"^\s*\w[\w-]*::\s")
 FENCED_CODE_END = re.compile(r"^(\s*)```\s*$")
+TABLE_ROW_PATTERN = re.compile(r"^\s*\|.+\|\s*$")
 
 
 def _serialize_frontmatter_value(obj: Any) -> Any:
@@ -145,7 +149,7 @@ def _get_heading_level(line: str) -> int:
     return 0
 
 
-def _parse_list_item_content(line: str) -> tuple[str, int]:
+def _parse_list_item_content(line: str) -> tuple[str, int, bool]:
     """
     Extract content from a list item line.
 
@@ -155,7 +159,7 @@ def _parse_list_item_content(line: str) -> tuple[str, int]:
 
     Checkboxes are converted to Logseq's TODO/DONE syntax.
 
-    Returns tuple of (formatted_content, indent_level).
+    Returns tuple of (formatted_content, indent_level, is_numbered).
     """
     indent_level = _get_indent_level(line)
 
@@ -169,28 +173,28 @@ def _parse_list_item_content(line: str) -> tuple[str, int]:
         text = text.strip()
         if text.startswith("TODO:") or text.startswith("DONE:"):
             text = text.split(":", 1)[1].strip()
-        return f"{status} {text}", indent_level
+        return f"{status} {text}", indent_level, False
 
     # Check for bullet - strip the marker, keep only text
     bullet_match = BULLET_PATTERN.match(line)
     if bullet_match:
         _, marker, text = bullet_match.groups()
-        return text, indent_level
+        return text, indent_level, False
 
     # Check for numbered - strip the number, keep only text
     numbered_match = NUMBERED_PATTERN.match(line)
     if numbered_match:
         _, number, text = numbered_match.groups()
-        return text, indent_level
+        return text, indent_level, True
 
     # Check for capitalized marker (TODO, DONE, DOING, etc.)
     marker_match = CAPITALIZED_MARKER_PATTERN.match(line)
     if marker_match:
         _, marker, text = marker_match.groups()
-        return f"{marker} {text}", indent_level
+        return f"{marker} {text}", indent_level, False
 
     # Fallback
-    return line.strip(), indent_level
+    return line.strip(), indent_level, False
 
 
 class MarkdownParser:
@@ -272,6 +276,20 @@ class MarkdownParser:
                 or CAPITALIZED_MARKER_PATTERN.match(line)
             ):
                 i = self._parse_list_item(lines, i)
+                continue
+
+            # Check for markdown table
+            if TABLE_ROW_PATTERN.match(line):
+                i = self._parse_table(lines, i)
+                continue
+
+            # Check for Logseq inline property (key:: value) — group consecutives into one block
+            if LOGSEQ_PROPERTY_PATTERN.match(line):
+                property_lines = []
+                while i < len(lines) and LOGSEQ_PROPERTY_PATTERN.match(lines[i]):
+                    property_lines.append(lines[i].strip())
+                    i += 1
+                self._add_block(BlockNode(content="\n  ".join(property_lines), level=0))
                 continue
 
             # Default: paragraph
@@ -377,9 +395,10 @@ class MarkdownParser:
         Returns the index of the next line to process.
         """
         line = lines[start]
-        item_content, indent_level = _parse_list_item_content(line)
+        item_content, indent_level, is_numbered = _parse_list_item_content(line)
 
-        list_block = BlockNode(content=item_content, level=indent_level)
+        props = {"logseq.order-list-type": "number"} if is_numbered else {}
+        list_block = BlockNode(content=item_content, level=indent_level, properties=props)
 
         i = start + 1
 
@@ -444,9 +463,10 @@ class MarkdownParser:
         Returns tuple of (BlockNode, next_line_index).
         """
         line = lines[start]
-        item_content, indent_level = _parse_list_item_content(line)
+        item_content, indent_level, is_numbered = _parse_list_item_content(line)
 
-        list_block = BlockNode(content=item_content, level=indent_level)
+        props = {"logseq.order-list-type": "number"} if is_numbered else {}
+        list_block = BlockNode(content=item_content, level=indent_level, properties=props)
 
         i = start + 1
 
@@ -489,6 +509,34 @@ class MarkdownParser:
 
         return list_block, i
 
+    def _parse_table(self, lines: list[str], start: int) -> int:
+        """
+        Parse a markdown table (contiguous lines matching | ... |).
+
+        Preserves newlines between rows so Logseq renders the table correctly.
+
+        Returns the index of the next line to process.
+        """
+        table_lines = []
+        i = start
+
+        while i < len(lines):
+            line = lines[i]
+            if TABLE_ROW_PATTERN.match(line):
+                table_lines.append(line.rstrip())
+                i += 1
+            elif not line.strip():
+                # Empty line ends the table
+                break
+            else:
+                break
+
+        if table_lines:
+            table_content = "\n".join(table_lines)
+            self._add_block(BlockNode(content=table_content, level=0))
+
+        return i
+
     def _parse_paragraph(self, lines: list[str], start: int) -> int:
         """
         Parse a paragraph (consecutive non-special lines).
@@ -514,6 +562,8 @@ class MarkdownParser:
                 or BLOCKQUOTE_PATTERN.match(line)
                 or HORIZONTAL_RULE_PATTERN.match(line)
                 or FENCED_CODE_START.match(line)
+                or LOGSEQ_PROPERTY_PATTERN.match(line)
+                or TABLE_ROW_PATTERN.match(line)
             ):
                 break
 

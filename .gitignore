@@ -14,3 +14,13 @@ uv.lock
 
 # Local files
 *.local*
+
+# Local artifacts
+.contextor_scope
+mcp_logseq.log
+project_context.md
+*.py.bak
+
+# IDE and OS files
+.vscode/
+**/.DS_Store

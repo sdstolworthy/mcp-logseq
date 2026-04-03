@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/images/logo.png" alt="MCP LogSeq" width="200" height="200">
   <h1>MCP server for LogSeq</h1>
-  <p>MCP server to interact with LogSeq via its API. Enables Claude to read, create, and manage LogSeq pages through a comprehensive set of tools.</p>
+  <p>Connect Claude to your LogSeq knowledge base. Read, create, and manage pages — with optional semantic vector search and DB-mode graph support.</p>
 </div>
 
 ## ✨ What You Can Do
@@ -24,11 +24,18 @@ Transform your LogSeq knowledge base into an AI-powered workspace! This MCP serv
 "Create a weekly review page from my recent notes"
 ```
 
-**🔍 Smart Research & Analysis** 
+**🔍 Smart Research & Analysis**
 ```
 "Compare my notes on React vs Vue and highlight key differences"
 "Find all references to 'customer feedback' and summarize themes"
 "Create a knowledge map connecting related topics across pages"
+```
+
+**🧠 Semantic Search** *(optional, requires vector setup)*
+```
+"Find everything I wrote about burnout, even if I didn't use that word"
+"What notes relate to my thoughts on deep work?"
+"Search across my Dutch and English notes for ideas about productivity"
 ```
 
 **🤝 Meeting & Documentation Workflow**
@@ -40,9 +47,11 @@ Transform your LogSeq knowledge base into an AI-powered workspace! This MCP serv
 
 ### 💡 Key Benefits
 - **Zero Context Switching**: Claude works directly with your LogSeq data
-- **Preserve Your Workflow**: No need to export or copy content manually  
+- **Preserve Your Workflow**: No need to export or copy content manually
 - **Intelligent Organization**: AI-powered page creation, linking, and search
 - **Enhanced Productivity**: Automate repetitive knowledge work
+- **Semantic Vector Search** *(optional)*: Find notes by meaning using local Ollama embeddings — no data leaves your machine
+- **DB-mode Support** *(opt-in)*: Read and write class properties on Logseq DB-mode graphs
 
 ---
 
@@ -87,18 +96,43 @@ Add to your config file (`Settings → Developer → Edit Config`):
 
 ---
 
+## 🔬 Vector Search (Optional)
+
+Semantic search over your Logseq graph using local AI embeddings — find notes by meaning, not just keywords. Searches across all your pages using vector similarity and full-text search combined, with cross-language support.
+
+Powered by [Ollama](https://ollama.com) (local embeddings) and [LanceDB](https://lancedb.com) (embedded vector DB). No data leaves your machine.
+
+→ **[Full setup guide: VECTOR_SEARCH.md](VECTOR_SEARCH.md)**
+
+---
+
 ## 🛠️ Available Tools
 
-The server provides 6 comprehensive tools with intelligent markdown parsing:
+The server provides 16 tools with intelligent markdown parsing, plus 3 optional vector search tools:
 
 | Tool | Purpose | Example Use |
 |------|---------|-------------|
 | **`list_pages`** | Browse your graph | "Show me all my pages" |
 | **`get_page_content`** | Read page content | "Get my project notes" |
-| **`create_page`** | Add new pages with structured blocks | "Create a meeting notes page with agenda items" |  
+| **`create_page`** | Add new pages with structured blocks | "Create a meeting notes page with agenda items" |
 | **`update_page`** | Modify pages (append/replace modes) | "Update my task list" |
 | **`delete_page`** | Remove pages | "Delete the old draft page" |
+| **`delete_block`** | Remove a block by UUID | "Delete this specific block" |
+| **`update_block`** | Edit block content by UUID | "Update this specific block text" |
 | **`search`** | Find content across graph | "Search for 'productivity tips'" |
+| **`query`** | Execute Logseq DSL queries | "Find all TODO tasks tagged #project" |
+| **`find_pages_by_property`** | Search pages by property | "Find all pages with status = active" |
+| **`get_pages_from_namespace`** | List pages in a namespace | "Show all pages under Customer/" |
+| **`get_pages_tree_from_namespace`** | Hierarchical namespace view | "Show Projects/ as a tree" |
+| **`rename_page`** | Rename with reference updates | "Rename 'Old Name' to 'New Name'" |
+| **`get_page_backlinks`** | Find pages linking to a page | "What links to this page?" |
+| **`insert_nested_block`** | Insert child/sibling blocks | "Add a child block under this task" |
+| **`set_block_properties`** | Set DB-mode class properties on a block | "Set the status of this block to active" *(DB-mode only)* |
+| **`vector_search`** ⚗️ | Semantic search by meaning | "Find notes about shadow work or Jung" |
+| **`sync_vector_db`** ⚗️ | Sync vector DB with graph files | "Update the search index" |
+| **`vector_db_status`** ⚗️ | Show vector DB health and staleness | "Is my search index up to date?" |
+
+⚗️ *Requires vector search setup — see [VECTOR_SEARCH.md](VECTOR_SEARCH.md)*
 
 ### 🎨 Smart Markdown Parsing (v1.1.0+)
 
@@ -159,6 +193,33 @@ def hello():
 ### Environment Variables
 - **`LOGSEQ_API_TOKEN`** (required): Your LogSeq API token
 - **`LOGSEQ_API_URL`** (optional): Server URL (default: `http://localhost:12315`)
+- **`LOGSEQ_DB_MODE`** (optional): Set to `true` to enable DB-mode property support. Only for Logseq DB-mode graphs (beta). Markdown/file-based graph users should leave this unset.
+- **`LOGSEQ_EXCLUDE_TAGS`** (optional): Comma-separated tags — pages with these tags are hidden from all tools. See [Privacy & Access Control](#-privacy--access-control) below.
+
+### Privacy & Access Control
+
+Pages tagged with excluded tags are completely hidden from AI — they won't appear in listings, searches, or queries, and attempting to read them directly returns an access-denied error.
+
+**Quick setup via env var:**
+```bash
+LOGSEQ_EXCLUDE_TAGS=private,secret
+```
+
+**Via config file** (also used for [vector search](VECTOR_SEARCH.md)):
+```json
+{
+  "logseq_graph_path": "/path/to/your/logseq/pages",
+  "exclude_tags": ["private", "secret"]
+}
+```
+Point to it with `LOGSEQ_CONFIG_FILE=/path/to/config.json`.
+
+In your Logseq pages, tag any page you want to protect:
+```
+tags:: private
+```
+
+The exclusion applies to all tools: `list_pages`, `get_page_content`, `search`, `query`, and the optional vector search. If you also use vector search, `exclude_tags` at the root is automatically merged into the vector index exclusion list — private pages are never embedded.
 
 ### Alternative Setup Methods
 
